@@ -1,0 +1,33 @@
+[Unit]
+Description=qingli Web 管理界面（默认仅本机）
+Documentation=file:/usr/share/doc/qingli/DESIGN.md
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# 访问令牌放在环境文件里，避免出现在 systemd 单元（可被普通用户读取）中：
+#   /etc/qingli/web.env 内容示例：
+#     QL_WEB_TOKEN=换成随机长串
+EnvironmentFile=-/etc/qingli/web.env
+ExecStart=/usr/local/bin/qingli serve {{ROOT}} \
+    --db /var/lib/qingli/qingli.db \
+    --bind 127.0.0.1 \
+    --port 8686 \
+    --token ${QL_WEB_TOKEN}
+Restart=on-failure
+RestartSec=3
+
+# 只读遍历 + 写自身库与回收站；管理界面能删除文件，因此权限必须收紧
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/lib/qingli {{ROOT}}
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+
+# 远程访问请用 SSH 隧道，不要直接暴露端口：
+#   ssh -L 8686:127.0.0.1:8686 user@server
+# 然后本机浏览器打开 http://127.0.0.1:8686/?token=<token>

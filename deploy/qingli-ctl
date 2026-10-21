@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# qingli-ctl —— 安装后的日常管理命令
+#
+#   qingli-ctl status            三个服务的运行状态 + 快照概况
+#   qingli-ctl info              安装信息、访问地址、令牌、数据量
+#   qingli-ctl start  <target>   启动（target: web|watch|scan|timer|all）
+#   qingli-ctl stop   <target>   停止
+#   qingli-ctl restart<target>   重启（scan 是一次性任务，等同 start）
+#   qingli-ctl enable <target>   开机自启
+#   qingli-ctl disable<target>   取消开机自启
+#   qingli-ctl logs   <name>     看日志（web|watch|scan，可加 -f 跟随）
+#   qingli-ctl scan-now          立即做一次全量扫描（后台）
+#   qingli-ctl token             打印当前访问令牌
+#   qingli-ctl url               打印访问地址
+#   qingli-ctl uninstall         提示卸载方式
+#
+# target 省略时默认 all（web + timer + watch；不含一次性 scan）。
+set -uo pipefail
+
+CONF=/etc/qingli/install.conf
+c_ok=$'\033[32m'; c_dim=$'\033[2m'; c_info=$'\033[36m'; c_warn=$'\033[33m'; c_off=$'\033[0m'
+
+say() { printf '%s==>%s %s\n' "$c_info" "$c_off" "$*"; }
+warn() { printf '%s  !%s %s\n' "$c_warn" "$c_off" "$*" >&2; }
+die() { printf '错误: %s\n' "$*" >&2; exit 1; }
+
+[[ -f "$CONF" ]] || die "找不到 $CONF —— 请先运行 install.sh"
+# shellcheck disable=SC1090
+. "$CONF"
+QL_BIN=${QL_BIN:-/usr/local/bin/qingli}
+QL_DB=${QL_DB:-/var/lib/qingli/qingli.db}
+QL_ROOT=${QL_ROOT:-/}
+QL_PORT=${QL_PORT:-8686}
+QL_TOKEN_FILE=${QL_TOKEN_FILE:-/etc/qingli/web.env}
+
+have_systemd() { [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; }
+
+unit_of() {
+    case "$1" in
+        web) echo qingli-web.service ;;
+        watch) echo qingli-watch.service ;;
+        scan) echo qingli-scan.service ;;
+        timer) echo qingli-scan.timer ;;
+        *) return 1 ;;
+    esac
+}
+units_for() {
+    case "$1" in
+        all) echo "web watch timer" ;;
+        web|watch|scan|timer) echo "$1" ;;
+        *) die "未知 target: $1（可选 web|watch|scan|timer|all）" ;;
+    esac
+}
+
+need_systemd() {
+    have_systemd || die "本机没有运行 systemd，无法执行该操作。可直接运行：
+  $QL_BIN serve $QL_ROOT --db $QL_DB --port $QL_PORT --token \$(sed -n 's/^QL_WEB_TOKEN=//p' $QL_TOKEN_FILE)"
+}
+
+cmd_status() {
+    echo
+    printf '%-22s %-12s %-10s %s\n' "单元" "状态" "开机自启" "说明"
+    printf '%-22s %-12s %-10s %s\n' "----------------------" "------------" "----------" "----"
+    for t in web watch timer scan; do
+        u=$(unit_of "$t")
+        if have_systemd; then
+            act=$(systemctl is-active "$u" 2>/dev/null || true)
+            en=$(systemctl is-enabled "$u" 2>/dev/null || true)
+        else
+            act="n/a"; en="n/a"
+        fi
+        case "$t" in
+            web)   desc="Web 管理界面 :$QL_PORT" ;;
+            watch) desc="fanotify 实时监听" ;;
+            timer) desc="每日全量扫描定时器" ;;
+            scan)  desc="一次性扫描任务" ;;
+        esac
+        # 用颜色区分，但保持列宽
+        case "$act" in
+            active) act_s="${c_ok}active${c_off}" ;;
+            inactive|failed) act_s="${c_warn}${act}${c_off}" ;;
+            *) act_s="$act" ;;
+        esac
+        printf '%-22s %-12s %-10s %s\n' "$u" "$act_s" "$en" "$desc"
+    done
+    echo
+    if [[ -f "$QL_DB" ]]; then
+        say "最近快照"
+        "$QL_BIN" top --db "$QL_DB" --dirs 0 2>/dev/null || warn "读取快照失败"
+    else
+        warn "还没有建档库（首次扫描可能仍在进行）：$QL_DB"
+    fi
+}
+
+cmd_info() {
+    local token="" size="—"
+    [[ -r "$QL_TOKEN_FILE" ]] && token=$(sed -n 's/^QL_WEB_TOKEN=//p' "$QL_TOKEN_FILE")
+    [[ -f "$QL_DB" ]] && size=$(du -h "$QL_DB" | cut -f1)
+    local host_ip
+    host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+    printf '\n%sqingli 安装信息%s\n\n' "$c_info" "$c_off"
+    printf '  %-14s %s\n' "版本"     "$("$QL_BIN" version 2>/dev/null | head -1 || echo '?')"
+    printf '  %-14s %s\n' "二进制"   "$QL_BIN"
+    printf '  %-14s %s\n' "扫描根"   "$QL_ROOT"
+    printf '  %-14s %s（%s）\n' "数据库" "$QL_DB" "$size"
+    printf '  %-14s %s\n' "配置"     "$CONF"
+    printf '  %-14s %s\n' "端口"     "$QL_PORT"
+    printf '  %-14s %s\n' "令牌"     "${token:-（需要 root 读取 $QL_TOKEN_FILE）}"
+    printf '\n'
+    printf '  %-14s http://127.0.0.1:%s/?token=%s\n' "本机访问" "$QL_PORT" "$token"
+    [[ -n "$host_ip" ]] && printf '  %-14s http://%s:%s/?token=%s\n' "局域网" "$host_ip" "$QL_PORT" "$token"
+    printf '\n'
+    printf '  %s注意：默认只监听 127.0.0.1；远程请用 SSH 隧道（ssh -L %s:127.0.0.1:%s user@server）%s\n\n' \
+        "$c_dim" "$QL_PORT" "$QL_PORT" "$c_off"
+}
+
+cmd_action() {
+    local act=$1 target=$2
+    need_systemd
+    for t in $(units_for "$target"); do
+        local u; u=$(unit_of "$t")
+        case "$act" in
+            start|stop|restart|enable|disable) ;;
+            *) die "内部错误: $act" ;;
+        esac
+        if [[ "$act" == "restart" && "$t" == "scan" ]]; then act="start"; fi
+        if systemctl "$act" "$u" 2>/dev/null; then
+            printf '  %s✓%s %s %s\n' "$c_ok" "$c_off" "$act" "$u"
+        else
+            printf '  %s✗%s %s %s 失败（journalctl -u %s -n 30）\n' "$c_warn" "$c_off" "$act" "$u" "$u"
+        fi
+    done
+}
+
+cmd_logs() {
+    local name=${1:-web}
+    local u; u=$(unit_of "$name") || die "未知服务: $name（可选 web|watch|scan）"
+    need_systemd
+    shift || true
+    if [[ "${1:-}" == "-f" ]]; then
+        journalctl -u "$u" -n 100 -f
+    else
+        journalctl -u "$u" -n 100 --no-pager
+    fi
+}
+
+cmd_scan_now() {
+    need_systemd
+    systemctl start --no-block qingli-scan.service || die "触发失败"
+    printf '  %s✓%s 已触发全量扫描（后台）。用 qingli-ctl status 或 qingli-ctl logs scan 观察。\n' "$c_ok" "$c_off"
+}
+
+cmd_token() {
+    [[ -r "$QL_TOKEN_FILE" ]] || die "读不到 $QL_TOKEN_FILE（需要 root）"
+    sed -n 's/^QL_WEB_TOKEN=//p' "$QL_TOKEN_FILE"
+}
+
+cmd_url() {
+    local token="" host_ip
+    [[ -r "$QL_TOKEN_FILE" ]] && token=$(sed -n 's/^QL_WEB_TOKEN=//p' "$QL_TOKEN_FILE")
+    host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    echo "http://127.0.0.1:$QL_PORT/?token=$token"
+    [[ -n "$host_ip" ]] && echo "http://$host_ip:$QL_PORT/?token=$token"
+}
+
+case "${1:-status}" in
+    status)    cmd_status ;;
+    info)      cmd_info ;;
+    start)     cmd_action start   "${2:-all}" ;;
+    stop)      cmd_action stop    "${2:-all}" ;;
+    restart)   cmd_action restart "${2:-all}" ;;
+    enable)    cmd_action enable  "${2:-all}" ;;
+    disable)   cmd_action disable "${2:-all}" ;;
+    logs)      cmd_logs "${2:-web}" "${3:-}" ;;
+    scan-now)  cmd_scan_now ;;
+    token)     cmd_token ;;
+    url)       cmd_url ;;
+    uninstall) echo "卸载：sudo $(dirname "$QL_BIN")/../share/qingli/install.sh --uninstall（或回到源码目录执行 sudo ./install.sh --uninstall）" ;;
+    -h|--help|help)
+        sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        ;;
+    *) die "未知命令: $1（qingli-ctl help 查看用法）" ;;
+esac

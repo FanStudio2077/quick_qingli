@@ -1,0 +1,52 @@
+# qingli 配置示例
+#
+# 用法：
+#   cp deploy/qingli.toml.example /etc/qingli.toml
+#   systemctl enable --now qingli-watch.service qingli-scan.timer
+#
+# 说明：当前版本 CLI 参数优先；本文件记录推荐的部署参数组合与取舍依据，
+#       便于运维审计（每个选择都对应 doc/PERFORMANCE.md 里的实测结论）。
+
+[scan]
+# 扫描根目录（必须是真实文件系统；伪文件系统会被自动排除）
+root = "/data"
+
+# 引擎：auto | serial | parallel
+#   auto     按介质自适应：非机械盘 → 线程池(nproc)；机械盘 → 单线程
+#            注意：虚拟设备（如 WSL 的 "Virtual Disk"）ROTA 会误报为 1，
+#            实现里会按 model/vendor 修正
+engine = "auto"
+
+# 线程数：留空表示按介质自动决定。
+# 实测（100 万文件，16 核）：16 线程 0.641s；32 线程（2x 超订）0.685s
+# → 2x 超订在"热缓存 + 元数据密集"下无收益，故自动值取 nproc 而非 2*nproc。
+threads = 0
+
+# 是否跨挂载点（0 = 不跨，与 du -x 语义一致）
+xdev = 0
+
+# 最大深度（防御异常深目录树）
+max_depth = 4096
+
+# 空间模式（Phase 3 快路径）：用 FS_IOC_GETFSMAP 跳过全部 statx。
+# 只产出 allocated，不产出 mtime/uid/gid/nlink/表观大小。
+# 实测：XFS(rmapbt) 上 0.021s vs 完整模式 0.225s ≈ 10.7x；
+#       ext4 上 GETFSMAP **没有 owner 归因**（无反向映射），会拒绝启用并回退。
+space = false
+
+[store]
+# 建档库（SQLite，WAL 模式）
+db = "/var/lib/qingli/qingli.db"
+
+# 保留快照个数（超出后由 qingli prune 清理）
+keep_snapshots = 3
+
+[watch]
+# fanotify 事件队列落库的批大小与提交间隔（摊薄事务开销）
+batch_events = 256
+commit_interval_ms = 1000
+
+# 事件掩码说明（实测约束）：
+#   FAN_CREATE/FAN_DELETE 需要 FAN_REPORT_FID，事件不带 fd；
+#   本实现选 FAN_MODIFY|FAN_CLOSE_WRITE（带 fd，路径可直接解析）。
+#   增删由周期全量扫描 + diff 权威给出。
