@@ -1,8 +1,11 @@
-# qingli 安装与服务脚本
+# quick_qingli
 
-本仓库**只包含安装/运维脚本**，不含 qingli 的程序源码。适用于已经拿到 `qingli` 可执行文件（或自行从源码构建好）的场景。
+快速清理程序，快速扫描清理。
 
-包含：
+本仓库**只包含安装与服务脚本**，不含 qingli 的程序源码。适用于已经拿到 `qingli`
+可执行文件（或自行从源码构建好）的场景。
+
+## 仓库内容
 
 | 文件 | 作用 |
 |---|---|
@@ -22,7 +25,7 @@
 ## 安装
 
 ```bash
-git clone <this-repo> && cd <this-repo>
+git clone https://github.com/FanStudio2077/quick_qingli.git && cd quick_qingli
 
 # 必须用 --bin 指定已编译好的 qingli
 sudo bash install.sh --root /data --bin /path/to/qingli
@@ -96,3 +99,7 @@ sudo bash install.sh --uninstall --purge    # 连 /etc/qingli 与 /var/lib/qingl
 脚本通过固定的命令行接口调用 `qingli`（`scan` / `import` / `serve` / `watch` / `top` / `version`），
 请确保二进制版本与脚本同期。若二进制缺少某个子命令，`install.sh` 会在安装前用 `qingli version`
 做一次可执行性校验并直接报错。
+
+## 许可证
+
+GPL-3.0，见 [LICENSE](LICENSE)。
