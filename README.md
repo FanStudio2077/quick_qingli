@@ -9,6 +9,7 @@
 
 | 文件 | 作用 |
 |---|---|
+| `get.sh` | **一行安装**引导：下载脚本包、定位二进制，再交给 install.sh |
 | `install.sh` | 一键安装 / 卸载：装二进制、生成令牌、渲染 systemd 单元、触发首扫 |
 | `deploy/qingli-ctl` | 日常管理命令：状态、信息、启停、重启、日志、立即扫描 |
 | `deploy/qingli-web.service` | Web 管理界面（默认仅监听 127.0.0.1） |
@@ -24,10 +25,30 @@
 
 ## 安装
 
+### 一行命令（推荐）
+
+```bash
+# 把编译好的 qingli 放到服务器任意路径，然后一条命令装完
+curl -fsSL https://raw.githubusercontent.com/FanStudio2077/quick_qingli/main/get.sh \
+  | sudo bash -s -- --bin /path/to/qingli --root /data
+```
+
+`get.sh` 会下载脚本包（含 `install.sh` 与 `deploy/` 下的单元、ctl），
+再把剩余参数原样交给 `install.sh`。也可以用环境变量传二进制：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/FanStudio2077/quick_qingli/main/get.sh \
+  | sudo QINGLI_BIN=/path/to/qingli bash -s -- --root /data
+```
+
+> 若本仓库发布了 Release（附件名 `qingli-linux-x86_64` / `qingli-linux-aarch64`），
+> 则连 `--bin` 都不用给，二进制会自动下载：
+> `curl -fsSL .../get.sh | sudo bash -s -- --root /data`
+
+### 从源码目录安装
+
 ```bash
 git clone https://github.com/FanStudio2077/quick_qingli.git && cd quick_qingli
-
-# 必须用 --bin 指定已编译好的 qingli
 sudo bash install.sh --root /data --bin /path/to/qingli
 ```
 
