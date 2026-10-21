@@ -268,6 +268,7 @@ $( [[ -n "$HOST_IP" ]] && echo "  局域网地址  : http://$HOST_IP:$PORT/?toke
   qingli-ctl start watch         # 开启实时监听（需要 CAP_SYS_ADMIN）
   qingli-ctl scan-now            # 立即做一次全量扫描
   qingli-ctl logs web            # 看日志
+  qingli-ctl update              # 升级到最新 Release（自动备份 + 重启）
   qingli-ctl stop all            # 全部停止
   sudo ./install.sh --uninstall  # 卸载（保留数据）
 

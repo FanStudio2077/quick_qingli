@@ -12,15 +12,22 @@
 #   qingli-ctl scan-now          立即做一次全量扫描（后台）
 #   qingli-ctl token             打印当前访问令牌
 #   qingli-ctl url               打印访问地址
+#   qingli-ctl update            升级到最新 Release（备份旧版 + 原子替换 + 重启）
+#   qingli-ctl update --check    只检查是否有新版，不下载安装
+#   qingli-ctl update --tag v1.0.0   升级/降级到指定版本
+#   qingli-ctl update --force    版本相同也强制重装
 #   qingli-ctl uninstall         提示卸载方式
 #
 # target 省略时默认 all（web + timer + watch；不含一次性 scan）。
+# 更新通道：默认直连 GitHub，失败自动回退镜像；
+#   强制指定镜像 QL_MIRROR=https://gh-proxy.org/ ，只用直连 QL_NO_MIRROR=1 。
 set -uo pipefail
 
 CONF=/etc/qingli/install.conf
 c_ok=$'\033[32m'; c_dim=$'\033[2m'; c_info=$'\033[36m'; c_warn=$'\033[33m'; c_off=$'\033[0m'
 
 say() { printf '%s==>%s %s\n' "$c_info" "$c_off" "$*"; }
+ok() { printf '%s  ✓%s %s\n' "$c_ok" "$c_off" "$*"; }
 warn() { printf '%s  !%s %s\n' "$c_warn" "$c_off" "$*" >&2; }
 die() { printf '错误: %s\n' "$*" >&2; exit 1; }
 
@@ -32,6 +39,11 @@ QL_DB=${QL_DB:-/var/lib/qingli/qingli.db}
 QL_ROOT=${QL_ROOT:-/}
 QL_PORT=${QL_PORT:-8686}
 QL_TOKEN_FILE=${QL_TOKEN_FILE:-/etc/qingli/web.env}
+QL_LIB=${QL_LIB:-$(dirname "$QL_DB")}
+
+# 更新用的仓库与镜像通道（与 get.sh 保持一致）
+QL_REPO=${QL_REPO:-FanStudio2077/quick_qingli}
+MIRRORS=(https://gh-proxy.org/ https://ghfast.top/ https://ghproxy.net/ https://gh-proxy.com/)
 
 have_systemd() { [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; }
 
@@ -164,6 +176,146 @@ cmd_url() {
     [[ -n "$host_ip" ]] && echo "http://$host_ip:$QL_PORT/?token=$token"
 }
 
+# ---------------------------------------------------------------- 更新
+version_of() { "$1" version 2>/dev/null | awk 'NR==1{print $2}'; }
+
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 8 --max-time 180 -o "$2" "$1" 2>/dev/null
+    else
+        wget -q -T 30 -O "$2" "$1" 2>/dev/null
+    fi
+}
+
+# 依次尝试：指定镜像（若有）或直连 → 其余镜像。任一成功即返回。
+download() {
+    local url=$1 out=$2 prefix
+    local order=("" "${MIRRORS[@]}")
+    if [[ -n "${QL_MIRROR:-}" ]]; then
+        order=("${QL_MIRROR%/}/")
+    elif [[ "${QL_NO_MIRROR:-0}" == "1" ]]; then
+        order=("")
+    fi
+    for prefix in "${order[@]}"; do
+        rm -f "$out"
+        if fetch "${prefix}${url}" "$out"; then
+            if [[ -n "$prefix" && "$prefix" != "${QL_MIRROR:-}" ]]; then
+                warn "直连不可用，已改用镜像：$prefix"
+            fi
+            return 0
+        fi
+    done
+    rm -f "$out"
+    return 1
+}
+
+cmd_update() {
+    local tag="" check=0 force=0 restart=1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tag)      tag=${2:-}; [[ -n "$tag" ]] || die "--tag 需要一个版本号，例如 --tag v1.0.0"; shift 2 ;;
+            --check)    check=1; shift ;;
+            --force)    force=1; shift ;;
+            --no-restart) restart=0; shift ;;
+            *) die "未知参数: $1（qingli-ctl help 查看用法）" ;;
+        esac
+    done
+
+    command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
+        || die "需要 curl 或 wget 才能下载"
+
+    local arch; arch=$(uname -m)
+    case "$arch" in
+        x86_64|aarch64) ;;
+        *) die "不支持的架构: $arch（请自行构建后用 install.sh --bin 安装）" ;;
+    esac
+
+    local base
+    if [[ -n "$tag" ]]; then
+        base="https://github.com/$QL_REPO/releases/download/$tag"
+    else
+        base="https://github.com/$QL_REPO/releases/latest/download"
+    fi
+    local url="$base/qingli-linux-$arch"
+
+    local old_ver; old_ver=$(version_of "$QL_BIN")
+    [[ -n "$old_ver" ]] || old_ver="未知"
+    printf '\n%sqingli 更新%s\n\n' "$c_info" "$c_off"
+    printf '  %-10s %s\n' "当前版本" "$old_ver"
+    printf '  %-10s %s\n' "目标版本" "${tag:-最新 Release}（qingli-linux-$arch）"
+
+    if [[ $EUID -ne 0 && $check -eq 0 ]]; then
+        die "更新需要 root（sudo qingli-ctl update）"
+    fi
+
+    local tmp; tmp=$(mktemp -d) || die "无法创建临时目录"
+    trap "rm -rf '$tmp'" EXIT
+
+    say "下载二进制（失败会自动切换镜像）"
+    download "$url" "$tmp/qingli" \
+        || die "下载失败：所有通道都不可用。
+   可指定通道重试：sudo QL_MIRROR=https://gh-proxy.org/ qingli-ctl update
+   或只用直连：   sudo QL_NO_MIRROR=1 qingli-ctl update"
+
+    [[ -s "$tmp/qingli" ]] || die "下载内容为空（可能被代理截断），请换通道重试"
+    chmod +x "$tmp/qingli"
+    local new_ver; new_ver=$(version_of "$tmp/qingli")
+    [[ -n "$new_ver" ]] \
+        || die "下载的二进制无法运行：架构不符或文件损坏。已保留原文件，未做任何替换。"
+
+    printf '  %-10s %s\n' "可用版本" "$new_ver"
+
+    if [[ $check -eq 1 ]]; then
+        if [[ "$new_ver" == "$old_ver" ]]; then
+            ok "已是最新版本（$old_ver）"
+        else
+            say "可更新：$old_ver → $new_ver（去掉 --check 执行升级）"
+        fi
+        return 0
+    fi
+
+    if [[ "$new_ver" == "$old_ver" && $force -eq 0 ]]; then
+        ok "已是最新版本（$old_ver）；如需强制重装加 --force"
+        return 0
+    fi
+
+    # 备份旧版（保留最近 3 份），失败不阻断更新
+    local bk="$QL_LIB/backup"
+    if [[ -x "$QL_BIN" ]]; then
+        install -d -m 0750 "$bk" 2>/dev/null || true
+        local stamp; stamp=$(date +%Y%m%d-%H%M%S)
+        if cp -p "$QL_BIN" "$bk/qingli-$old_ver-$stamp" 2>/dev/null; then
+            ok "旧版已备份：$bk/qingli-$old_ver-$stamp"
+            ls -1t "$bk"/qingli-* 2>/dev/null | tail -n +4 | xargs -r rm -f
+        else
+            warn "备份失败（继续更新，可用 install.sh --bin 回滚）"
+        fi
+    fi
+
+    # 原子替换：先写同目录临时文件，再 mv（避免写入中途被服务读到半个文件）
+    install -m 0755 "$tmp/qingli" "$QL_BIN.new" || die "写入 $QL_BIN.new 失败"
+    mv -f "$QL_BIN.new" "$QL_BIN" || die "替换 $QL_BIN 失败"
+    ok "二进制已替换：$QL_BIN"
+
+    if [[ $restart -eq 1 ]] && have_systemd; then
+        systemctl daemon-reload 2>/dev/null || true
+        local u
+        for u in qingli-web.service qingli-watch.service; do
+            if systemctl is-active --quiet "$u" 2>/dev/null; then
+                if systemctl restart "$u" 2>/dev/null; then
+                    printf '  %s✓%s 已重启 %s\n' "$c_ok" "$c_off" "$u"
+                else
+                    printf '  %s✗%s 重启 %s 失败（journalctl -u %s -n 30）\n' "$c_warn" "$c_off" "$u" "$u"
+                fi
+            fi
+        done
+    elif [[ $restart -eq 1 ]]; then
+        warn "本机没有运行 systemd，请手动重启正在运行的 qingli 进程"
+    fi
+
+    ok "更新完成：$old_ver → $new_ver"
+}
+
 case "${1:-status}" in
     status)    cmd_status ;;
     info)      cmd_info ;;
@@ -176,9 +328,10 @@ case "${1:-status}" in
     scan-now)  cmd_scan_now ;;
     token)     cmd_token ;;
     url)       cmd_url ;;
+    update)    shift; cmd_update "$@" ;;
     uninstall) echo "卸载：sudo $(dirname "$QL_BIN")/../share/qingli/install.sh --uninstall（或回到源码目录执行 sudo ./install.sh --uninstall）" ;;
     -h|--help|help)
-        sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,/^set -uo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
         ;;
     *) die "未知命令: $1（qingli-ctl help 查看用法）" ;;
 esac
