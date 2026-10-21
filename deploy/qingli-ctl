@@ -181,15 +181,18 @@ version_of() { "$1" version 2>/dev/null | awk 'NR==1{print $2}'; }
 
 fetch() {
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 8 --max-time 180 -o "$2" "$1" 2>/dev/null
+        # --speed-limit/--speed-time：连接上了但几乎不动（被墙常见表现）时提前放弃，
+        # 否则单通道最长要挂 --max-time 那么久，用户看起来就是"卡死"。
+        curl -fsSL --connect-timeout 5 --max-time 60 \
+             --speed-limit 4096 --speed-time 12 -o "$2" "$1" 2>/dev/null
     else
-        wget -q -T 30 -O "$2" "$1" 2>/dev/null
+        wget -q --timeout=10 --tries=1 -O "$2" "$1" 2>/dev/null
     fi
 }
 
 # 依次尝试：指定镜像（若有）或直连 → 其余镜像。任一成功即返回。
 download() {
-    local url=$1 out=$2 prefix
+    local url=$1 out=$2 prefix label
     local order=("" "${MIRRORS[@]}")
     if [[ -n "${QL_MIRROR:-}" ]]; then
         order=("${QL_MIRROR%/}/")
@@ -197,6 +200,8 @@ download() {
         order=("")
     fi
     for prefix in "${order[@]}"; do
+        label=${prefix:-直连}
+        printf '  %s·%s 尝试 %s\n' "$c_dim" "$c_off" "$label"
         rm -f "$out"
         if fetch "${prefix}${url}" "$out"; then
             if [[ -n "$prefix" && "$prefix" != "${QL_MIRROR:-}" ]]; then
@@ -204,6 +209,7 @@ download() {
             fi
             return 0
         fi
+        printf '  %s·%s %s 不可用\n' "$c_dim" "$c_off" "$label"
     done
     rm -f "$out"
     return 1
