@@ -1,0 +1,27 @@
+[Unit]
+Description=qingli 磁盘空间建档 —— 周期全量扫描（权威值来源）
+Documentation=file:/usr/share/doc/qingli/DESIGN.md
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# 扫描需要读全盘；若目标目录下存在无读权限的子目录，请以 root 运行或精细授权。
+User=root
+ExecStart=/usr/local/bin/qingli scan {{ROOT}} --out /var/lib/qingli/snapshot.spool --engine auto
+ExecStartPost=/usr/local/bin/qingli import /var/lib/qingli/snapshot.spool --db /var/lib/qingli/qingli.db
+
+# 保留最近 3 个完整快照，避免库无限增长
+ExecStartPost=-/usr/local/bin/qingli prune --db /var/lib/qingli/qingli.db --root {{ROOT}} --keep 3
+
+# 只读遍历 + 写自身库；禁止提权、禁止访问 /proc 之外的敏感路径
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/qingli
+PrivateTmp=yes
+
+# 一次全量扫描可能较久，给足超时（千万级 + 冷缓存）
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

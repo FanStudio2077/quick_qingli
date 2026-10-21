@@ -1,0 +1,14 @@
+[Unit]
+Description=qingli 定时全量扫描（每日一次；缺失的扫描由 fanotify 溢出标记补齐）
+Documentation=file:/usr/share/doc/qingli/DESIGN.md
+
+[Timer]
+# 每天 03:17 跑一次全量（避开整点，减少与其他定时任务撞车）
+OnCalendar=*-*-* 03:17:00
+# 若机器当时关机/休眠，开机后补跑一次
+Persistent=true
+# 加一点随机延迟，避免多机同时开扫
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
