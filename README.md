@@ -83,9 +83,30 @@ qingli-ctl scan-now                # 立即后台全量扫描
 qingli-ctl logs web -f             # 跟随日志
 qingli-ctl token                   # 打印令牌（给脚本用）
 qingli-ctl url                     # 打印访问地址（给脚本用）
+qingli-ctl update                  # 升级到最新 Release
 ```
 
 `target` 可选：`web` / `watch` / `scan` / `timer` / `all`。
+
+## 更新
+
+```bash
+sudo qingli-ctl update              # 拉最新 Release：备份旧版 → 原子替换 → 重启服务
+sudo qingli-ctl update --check      # 只看有没有新版（非 root 也可）
+sudo qingli-ctl update --tag v1.0.0 # 升级或回退到指定版本
+sudo qingli-ctl update --force      # 版本相同也强制重装
+sudo qingli-ctl update --no-restart # 只换二进制，不重启服务
+```
+
+下载默认走直连，失败自动回退镜像；也可显式指定：
+
+```bash
+sudo QL_MIRROR=https://gh-proxy.org/ qingli-ctl update   # 强制走某个镜像
+sudo QL_NO_MIRROR=1 qingli-ctl update                    # 只用直连
+```
+
+旧版二进制备份在 `/var/lib/qingli/backup/`（保留最近 3 份），回滚就是把它拷回
+`/usr/local/bin/qingli` 再 `qingli-ctl restart web`。
 
 ## 安全默认值
 
